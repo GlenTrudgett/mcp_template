@@ -120,55 +120,89 @@ async def call_tool(name: str, arguments: Any) -> str:
 async def list_resources() -> list[Resource]:
     """
     List all available resources provided by this server.
-    
+
     This function is called by MCP clients to discover what resources are available.
     Each resource must have:
     - uri: Unique identifier for the resource (e.g., "server://info")
     - name: Human-readable name for the resource
     - description: Description of what the resource contains
     - mimeType: MIME type indicating the resource format (e.g., "text/plain", "application/json")
-    
+
     Returns:
         list[Resource]: A list of Resource objects describing available resources
     """
-    # TODO: Add your resources here
-    # Example:
-    # return [
-    #     Resource(
-    #         uri="server://example",
-    #         name="Example Resource",
-    #         description="An example resource for demonstration",
-    #         mimeType="text/plain"
-    #     )
-    # ]
-    return []
+    return [
+        Resource(
+            uri="server://status",
+            name="Server Status",
+            description="Current server metrics including uptime, memory usage, and CPU load",
+            mimeType="application/json"
+        ),
+        Resource(
+            uri="server://info",
+            name="Server Info",
+            description="Server configuration and version information",
+            mimeType="application/json"
+        )
+    ]
 
 
 @app.read_resource()
 async def read_resource(uri: str) -> str:
     """
     Read a resource by its URI.
-    
+
     This function is called when an MCP client requests to read a resource.
     The function must:
     1. Match the URI to a resource handler
     2. Retrieve or generate the resource content
     3. Return the content as a string
-    
+
     Args:
         uri: The URI of the resource to read
-    
+
     Returns:
         str: The content of the resource
-    
+
     Raises:
         ValueError: If the URI is unknown
+
+    Note: For production servers with many resources, consider using a registry pattern
+    instead of if/elif chains. See SCALING_GUIDE.md for scalable alternatives.
     """
-    # TODO: Implement your resource handlers here
-    # Example pattern:
-    # if uri == "server://example":
-    #     return "Example resource content"
-    
+    import json
+    import sys
+    from datetime import datetime
+
+    if uri == "server://status":
+        import psutil
+
+        status = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "uptime_seconds": psutil.boot_time(),
+            "cpu_percent": psutil.cpu_percent(interval=1),
+            "memory": {
+                "total_bytes": psutil.virtual_memory().total,
+                "available_bytes": psutil.virtual_memory().available,
+                "percent_used": psutil.virtual_memory().percent
+            },
+            "disk": {
+                "total_bytes": psutil.disk_usage('/').total,
+                "used_bytes": psutil.disk_usage('/').used,
+                "percent_used": psutil.disk_usage('/').percent
+            }
+        }
+        return json.dumps(status, indent=2)
+
+    elif uri == "server://info":
+        info = {
+            "server_name": "mcp-server-boilerplate",
+            "version": "0.1.0",
+            "transport_mode": os.getenv("MCP_TRANSPORT", "stdio"),
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+        }
+        return json.dumps(info, indent=2)
+
     raise ValueError(f"Unknown resource URI: {uri}")
 
 
@@ -180,69 +214,90 @@ async def read_resource(uri: str) -> str:
 async def list_prompts() -> list[Prompt]:
     """
     List all available prompts provided by this server.
-    
+
     This function is called by MCP clients to discover what prompts are available.
     Each prompt must have:
     - name: Unique identifier for the prompt
     - description: Human-readable description of what the prompt does
     - arguments (optional): List of PromptArgument objects defining template variables
-    
+
     Each PromptArgument must have:
     - name: Name of the argument/variable in the template
     - description: Description of what the argument represents
     - required (optional): Whether the argument is required (default: false)
-    
+
     Returns:
         list[Prompt]: A list of Prompt objects describing available prompts
     """
-    # TODO: Add your prompts here
-    # Example:
-    # return [
-    #     Prompt(
-    #         name="example_prompt",
-    #         description="An example prompt template",
-    #         arguments=[
-    #             PromptArgument(
-    #                 name="topic",
-    #                 description="The topic to write about",
-    #                 required=True
-    #             )
-    #         ]
-    #     )
-    # ]
-    return []
+    return [
+        Prompt(
+            name="code_review",
+            description="Guides AI assistants to perform thorough code reviews focusing on security, performance, and best practices",
+            arguments=[
+                PromptArgument(
+                    name="language",
+                    description="Programming language of the code being reviewed (e.g., python, javascript, go)",
+                    required=True
+                ),
+                PromptArgument(
+                    name="focus_area",
+                    description="Specific area to focus on (e.g., security, performance, readability, all)",
+                    required=False
+                )
+            ]
+        )
+    ]
 
 
 @app.get_prompt()
 async def get_prompt(name: str, arguments: dict[str, str] | None) -> str:
     """
     Get a prompt template with arguments filled in.
-    
+
     This function is called when an MCP client requests a prompt.
     The function must:
     1. Match the prompt name to a handler
     2. Validate the provided arguments against the prompt's requirements
     3. Fill in the template with the arguments
     4. Return the completed prompt as a string
-    
+
     Args:
         name: The name of the prompt to retrieve
         arguments: Optional dictionary of argument names to values
-    
+
     Returns:
         str: The completed prompt template with arguments filled in
-    
+
     Raises:
         ValueError: If the prompt name is unknown or arguments are invalid/missing
     """
-    # TODO: Implement your prompt handlers here
-    # Example pattern:
-    # if name == "example_prompt":
-    #     topic = arguments.get("topic") if arguments else None
-    #     if not topic:
-    #         raise ValueError("Argument 'topic' is required")
-    #     return f"Write a detailed explanation about {topic}."
-    
+    if name == "code_review":
+        language = arguments.get("language") if arguments else None
+        if not language:
+            raise ValueError("Argument 'language' is required")
+        focus_area = arguments.get("focus_area", "all") if arguments else "all"
+
+        prompt = f"""You are performing a code review for {language} code.
+Focus area: {focus_area}
+
+Please review the code with attention to:
+"""
+
+        if focus_area in ["all", "security"]:
+            prompt += "- Security vulnerabilities (SQL injection, XSS, authentication issues)\n"
+        if focus_area in ["all", "performance"]:
+            prompt += "- Performance bottlenecks and optimization opportunities\n"
+        if focus_area in ["all", "readability"]:
+            prompt += "- Code readability, naming conventions, and documentation\n"
+
+        prompt += """- Error handling and edge cases
+- Adherence to best practices
+- Potential bugs or logic errors
+
+Provide specific, actionable feedback with code examples where appropriate."""
+
+        return prompt
+
     raise ValueError(f"Unknown prompt: {name}")
 
 
