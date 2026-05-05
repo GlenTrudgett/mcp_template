@@ -6,3 +6,10 @@ requires-python = ">=3.10"
 dependencies = [
     "mcp>=0.9.0",
 ]
+
+[project.optional-dependencies]
+sse = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "sse-starlette>=1.6.0",
+]

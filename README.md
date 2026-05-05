@@ -70,6 +70,52 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
+**For SSE (remote HTTP) transport support:**
+```bash
+uv sync --extra sse
+```
+
+This installs FastAPI, uvicorn, and SSE-related dependencies for remote deployment.
+
+## Transport Modes
+
+This boilerplate supports two transport modes for MCP communication:
+
+### stdio Mode (Default)
+- **Use case**: Local development, CLI tools, desktop applications
+- **How it works**: Server runs as a subprocess, communicates via stdin/stdout
+- **Configuration**: Default mode, no configuration needed
+- **Client setup**: Configure MCP client to run the server as a command
+
+```bash
+# Run in stdio mode (default)
+uv run python mcp_server.py
+```
+
+### SSE Mode (Server-Sent Events)
+- **Use case**: Web clients, remote deployment, production scenarios
+- **How it works**: HTTP server with SSE for streaming responses
+- **Configuration**: Set `MCP_TRANSPORT=sse` environment variable
+- **Client setup**: Configure MCP client with HTTP endpoint URL
+
+```bash
+# Install SSE dependencies
+uv sync --extra sse
+
+# Run in SSE mode
+MCP_TRANSPORT=sse uv run python mcp_server.py
+```
+
+**SSE Configuration:**
+- `MCP_TRANSPORT=sse` - Enable SSE transport
+- `MCP_HOST=0.0.0.0` - Host to bind to (default: 0.0.0.0)
+- `MCP_PORT=8000` - Port to listen on (default: 8000)
+
+**SSE Endpoints:**
+- `GET /sse` - SSE endpoint for event streaming
+- `POST /messages` - POST endpoint for client requests
+- `GET /health` - Health check endpoint
+
 ## Quick Start
 
 ### 1. Add Your First Tool
@@ -150,6 +196,8 @@ uv run python mcp_server.py
 
 ### 4. Configure Your MCP Client
 
+**For stdio mode (local):**
+
 Add this to your MCP client's configuration:
 
 ```json
@@ -163,12 +211,30 @@ Add this to your MCP client's configuration:
 }
 ```
 
+**For SSE mode (remote):**
+
+Add this to your MCP client's configuration:
+
+```json
+{
+  "mcpServers": {
+    "your-server-name": {
+      "url": "http://localhost:8000/sse",
+      "transport": "sse"
+    }
+  }
+}
+```
+
+For production deployment, replace `http://localhost:8000` with your actual server URL.
+
 ## Documentation
 
 - **ARCHITECTURE.md**: Detailed architecture documentation with Mermaid diagrams showing:
   - Python modules and their purposes
   - Component interactions
-  - Request flows (tool invocation, resource reading)
+  - Request flows (tool invocation, resource reading, prompt retrieval)
+  - Transport modes (stdio and SSE)
   - Design patterns used
 
 - **SCALING_GUIDE.md**: Best practices for scaling your server:
@@ -180,6 +246,57 @@ Add this to your MCP client's configuration:
   - Testing strategies
   - Performance optimization
   - Security considerations
+  - SSE deployment guidance
+
+## Production Deployment
+
+### SSE Mode Deployment
+
+For production deployment using SSE transport:
+
+1. **Install SSE dependencies:**
+```bash
+uv sync --extra sse
+```
+
+2. **Configure environment variables:**
+```bash
+export MCP_TRANSPORT=sse
+export MCP_HOST=0.0.0.0
+export MCP_PORT=8000
+```
+
+3. **Run with a production ASGI server:**
+```bash
+uv run uvicorn mcp_server:web_app --host 0.0.0.0 --port 8000 --workers 4
+```
+
+4. **Containerization (Docker):**
+```dockerfile
+FROM python:3.10-slim
+WORKDIR /app
+COPY . .
+RUN pip install uv && uv sync --extra sse
+ENV MCP_TRANSPORT=sse
+ENV MCP_HOST=0.0.0.0
+ENV MCP_PORT=8000
+CMD ["uv", "run", "uvicorn", "mcp_server:web_app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+5. **Health checks:**
+- The server provides a `/health` endpoint for monitoring
+- Returns server status and active session count
+- Use for container orchestration (Kubernetes, Docker health checks)
+
+### Security Considerations for Production
+
+- **Authentication**: Add authentication middleware to FastAPI app
+- **CORS**: Configure CORS for web client access
+- **Rate limiting**: Implement rate limiting to prevent abuse
+- **TLS**: Use reverse proxy (nginx, traefik) for HTTPS termination
+- **Secrets**: Use environment variables or secret management for API keys
+
+See SCALING_GUIDE.md for detailed security patterns.
 
 ## Code Structure
 

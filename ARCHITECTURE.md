@@ -6,6 +6,10 @@ This document describes the architecture of the MCP server boilerplate, includin
 
 The Model Context Protocol (MCP) is a standardized protocol that enables AI assistants to interact with external servers. This boilerplate provides a minimal, well-documented implementation that can serve as a baseline for building custom MCP servers.
 
+This boilerplate supports two transport modes:
+- **stdio (default)**: Local communication via stdin/stdout for CLI tools and desktop applications
+- **SSE**: Remote HTTP/SSE communication for web clients and production deployment
+
 ## Python Modules and Their Purposes
 
 ### Core MCP Modules
@@ -57,8 +61,17 @@ The Model Context Protocol (MCP) is a standardized protocol that enables AI assi
 
 #### `mcp.server.stdio.stdio_server`
 - **Purpose**: Creates stdio (standard input/output) streams for communication
-- **Usage**: Standard way MCP servers communicate with clients
+- **Usage**: Standard way MCP servers communicate with clients for local deployment
 - **Returns**: Tuple of (read_stream, write_stream) for JSON-RPC messages
+
+#### `mcp.server.sse.SseServerTransport`
+- **Purpose**: Creates SSE (Server-Sent Events) transport for HTTP communication
+- **Usage**: Remote deployment for web clients and production scenarios
+- **Requires**: FastAPI and SSE-related dependencies (install with `uv sync --extra sse`)
+- **Endpoints**:
+  - `/sse`: SSE endpoint for server-to-client event streaming
+  - `/messages`: POST endpoint for client-to-server JSON-RPC messages
+  - `/health`: Health check endpoint for monitoring
 
 ### Standard Library Modules
 
@@ -81,6 +94,12 @@ The Model Context Protocol (MCP) is a standardized protocol that enables AI assi
   - `dict[str, Any]`: Dictionary with string keys and any values
   - `dict[str, str] | None`: Optional dictionary of string keys and values
 
+#### `os`
+- **Purpose**: Provides operating system interfaces
+- **Why Used**: Read environment variables for transport configuration
+- **Key Functions**:
+  - `os.getenv()`: Read environment variables (MCP_TRANSPORT, MCP_HOST, MCP_PORT)
+
 ## Architecture Diagram
 
 ```mermaid
@@ -90,73 +109,87 @@ graph TD
         B[MCP Client Library]
     end
     
-    subgraph "Communication Layer"
-        C[stdio<br/>Standard Input/Output]
-        D[JSON-RPC Messages]
+    subgraph "Transport Selection"
+        T1{MCP_TRANSPORT}
+        T2[stdio Mode]
+        T3[SSE Mode]
     end
     
-    subgraph "MCP Server"
-        E[Server Instance]
-        F[list_tools Handler]
-        G[call_tool Handler]
-        H[list_resources Handler]
-        I[read_resource Handler]
-        J[list_prompts Handler]
-        K[get_prompt Handler]
+    subgraph "stdio Communication"
+        C[stdio<br/>Standard Input/Output]
+    end
+    
+    subgraph "SSE Communication"
+        D[FastAPI Server]
+        E[SSE Endpoint /sse]
+        F[POST Endpoint /messages]
+        G[Health Check /health]
+    end
+    
+    subgraph "MCP Server Core"
+        H[Server Instance]
+        I[list_tools Handler]
+        J[call_tool Handler]
+        K[list_resources Handler]
+        L[read_resource Handler]
+        M[list_prompts Handler]
+        N[get_prompt Handler]
     end
     
     subgraph "Tool Implementations"
-        L[Tool 1]
-        M[Tool 2]
-        N[Tool N]
+        O[Tool 1]
+        P[Tool 2]
+        Q[Tool N]
     end
     
     subgraph "Resource Implementations"
-        O[Resource 1]
-        P[Resource 2]
-        Q[Resource N]
+        R[Resource 1]
+        S[Resource 2]
+        T[Resource N]
     end
     
     subgraph "Prompt Implementations"
-        R[Prompt 1]
-        S[Prompt 2]
-        T[Prompt N]
+        U[Prompt 1]
+        V[Prompt 2]
+        W[Prompt N]
     end
     
     A --> B
-    B -->|JSON-RPC| C
-    C -->|Messages| D
+    B --> T1
+    T1 -->|stdio| T2
+    T1 -->|sse| T3
+    T2 --> C
+    T3 --> D
     D --> E
-    E --> F
-    E --> G
+    D --> F
+    D --> G
+    C --> H
     E --> H
-    E --> I
-    G --> J
-    G --> K
-    G --> L
-    I --> M
-    I --> N
-    I --> O
-    J --> G
-    K --> G
-    L --> G
-    M --> I
-    N --> I
-    O --> I
-    I --> D
-    G --> D
-    F --> D
-    D --> C
-    C --> B
-    B --> A
+    F --> H
+    H --> I
+    H --> J
+    H --> K
+    H --> L
+    H --> M
+    H --> N
+    J --> O
+    J --> P
+    J --> Q
+    L --> R
+    L --> S
+    L --> T
+    M --> U
+    M --> V
+    M --> W
     
-    style E fill:#e1f5ff
-    style F fill:#fff4e1
-    style G fill:#fff4e1
-    style H fill:#fff4e1
+    style H fill:#e1f5ff
     style I fill:#fff4e1
     style J fill:#fff4e1
     style K fill:#fff4e1
+    style L fill:#fff4e1
+    style M fill:#fff4e1
+    style N fill:#fff4e1
+    style D fill:#e1ffe1
 ```
 
 ## Request Flow Diagrams
@@ -228,13 +261,41 @@ sequenceDiagram
     Server-->>Client: Prompt content
 ```
 
+### SSE Connection Flow
+
+```mermaid
+sequenceDiagram
+    participant Client as MCP Client
+    participant FastAPI as FastAPI Server
+    participant SSE as SSE Endpoint
+    participant Server as MCP Server Instance
+    
+    Client->>FastAPI: GET /sse
+    FastAPI->>SSE: Create SSE transport
+    SSE->>Server: Create new server instance
+    Server-->>SSE: Initialization options
+    SSE-->>Client: SSE stream established
+    
+    Client->>FastAPI: POST /messages (JSON-RPC)
+    FastAPI->>Server: Route to session
+    Server->>Server: Process request
+    Server-->>SSE: Response via SSE
+    SSE-->>Client: Server response
+    
+    Client->>FastAPI: Disconnect
+    FastAPI->>Server: Cleanup session
+    Server-->>FastAPI: Session closed
+```
+
 ## Component Interactions
 
 ### Server Initialization
-1. Create `Server` instance with unique identifier
-2. Register handlers using decorators (`@app.list_tools`, etc.)
-3. Create stdio streams for communication
-4. Start server event loop with `app.run()`
+1. Read `MCP_TRANSPORT` environment variable (default: "stdio")
+2. Create `Server` instance with unique identifier
+3. Register handlers using decorators (`@app.list_tools`, etc.)
+4. Based on transport mode:
+   - **stdio**: Create stdio streams, start server event loop
+   - **SSE**: Create FastAPI app, register endpoints, start uvicorn server
 
 ### Tool Discovery
 1. Client calls `list_tools()`
@@ -276,6 +337,14 @@ sequenceDiagram
 5. Handler returns prompt as string
 6. Server sends prompt to client
 
+### SSE Session Management
+1. Client connects to `/sse` endpoint
+2. Server creates SSE transport and new server instance
+3. Server tracks session in active_sessions dict
+4. Client sends requests via POST `/messages` endpoint
+5. Server routes messages to appropriate session
+6. On disconnect, server cleans up session from active_sessions
+
 ## Design Patterns
 
 ### Decorator Pattern
@@ -295,6 +364,13 @@ All functions include type hints:
 - Better IDE support and autocomplete
 - Documentation of expected types
 - Early error detection with type checkers
+
+### Multi-Transport Pattern
+The server supports multiple transport modes:
+- Environment variable-based transport selection
+- Shared handler logic across transports
+- Transport-specific initialization in main()
+- Allows same business logic for local and remote deployment
 
 ## Extension Points
 

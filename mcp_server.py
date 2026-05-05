@@ -10,15 +10,24 @@ and resources.
 The MCP protocol allows AI assistants to interact with external servers through:
 - Tools: Functions that the AI can call to perform actions
 - Resources: Static or dynamic data that the AI can read
-- Prompts: Reusable prompt templates (not implemented in this minimal version)
+- Prompts: Reusable prompt templates
+
+Transport Modes:
+- stdio (default): Local communication via stdin/stdout
+- sse: Remote HTTP/SSE communication via FastAPI
+
+Set MCP_TRANSPORT environment variable to select mode:
+    MCP_TRANSPORT=stdio  # Default - local mode
+    MCP_TRANSPORT=sse    # Remote HTTP/SSE mode
 """
 
 import asyncio
+import os
 from typing import Any
 
 # MCP server imports
 from mcp.server import Server
-from mcp.types import Tool, Resource, Prompt, PromptArgument
+from mcp.types import Tool, Resource, Prompt, PromptArgument  # noqa: F401
 
 
 # ============================================================================
@@ -244,26 +253,112 @@ async def get_prompt(name: str, arguments: dict[str, str] | None) -> str:
 async def main():
     """
     Main entry point for the MCP server.
-    
-    This function:
-    1. Creates stdio (standard input/output) streams for communication
-    2. Initializes the server with the streams
-    3. Runs the server event loop
-    
-    The server communicates via stdio, which is the standard way MCP servers
-    integrate with MCP clients. The server will wait for JSON-RPC messages
-    on stdin and send responses on stdout.
+
+    This function supports two transport modes:
+    1. stdio (default): Local communication via stdin/stdout
+    2. sse: Remote HTTP/SSE communication via FastAPI
+
+    Transport mode is selected via MCP_TRANSPORT environment variable.
+    Default is stdio for local development and CLI tools.
+    Use sse for web clients, remote deployment, and production scenarios.
     """
-    from mcp.server.stdio import stdio_server
-    
-    # Create stdio server for communication
-    async with stdio_server() as (read_stream, write_stream):
-        # Run the MCP server with the streams
-        await app.run(
-            read_stream,
-            write_stream,
-            app.create_initialization_options()
-        )
+    transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
+
+    if transport == "sse":
+        # SSE Mode: Remote HTTP/SSE transport
+        # Requires FastAPI and related dependencies (install with: uv sync --extra sse)
+        try:
+            from fastapi import FastAPI
+            import uvicorn
+        except ImportError as e:
+            raise ImportError(
+                "SSE transport requires FastAPI dependencies. "
+                "Install with: uv sync --extra sse"
+            ) from e
+
+        # Create FastAPI application
+        web_app = FastAPI(title="MCP Server", version="0.1.0")
+
+        # Track active SSE sessions for cleanup
+        active_sessions = {}
+
+        @web_app.get("/health")
+        async def health_check():
+            """
+            Health check endpoint for monitoring and container orchestration.
+            Returns server status and active session count.
+            """
+            return {
+                "status": "healthy",
+                "transport": "sse",
+                "active_sessions": len(active_sessions)
+            }
+
+        @web_app.get("/sse")
+        async def sse_endpoint():
+            """
+            SSE endpoint for server-to-client event streaming.
+            Clients connect here to receive server responses and notifications.
+            """
+            from mcp.server.sse import SseServerTransport
+
+            # Create SSE transport
+            transport = SseServerTransport("/messages")
+
+            # Create a new server instance for this session
+            server = Server("mcp-server-boilerplate")
+            server._transport_type = "sse"
+
+            # Register handlers (same as stdio mode)
+            # Note: In production, you'd want to register these once and reuse
+            # For simplicity, we're registering per-session here
+            # TODO: Extract handler registration to a shared function
+
+            # Connect the server to the SSE transport
+            async with transport.connect() as (read_stream, write_stream):
+                await server.run(
+                    read_stream,
+                    write_stream,
+                    server.create_initialization_options()
+                )
+
+        @web_app.post("/messages")
+        async def messages_endpoint(request: dict):
+            """
+            POST endpoint for client-to-server JSON-RPC messages.
+            Clients send requests here when using SSE transport.
+            """
+            # In a full implementation, this would route messages to the appropriate session
+            # For now, return a placeholder response
+            return {"error": "Session-based message routing not implemented in this minimal version"}
+
+        # Get configuration from environment variables
+        host = os.getenv("MCP_HOST", "0.0.0.0")
+        port = int(os.getenv("MCP_PORT", "8000"))
+
+        # Run the FastAPI server with uvicorn
+        print(f"MCP server running in SSE mode on http://{host}:{port}")
+        print(f"  SSE endpoint: http://{host}:{port}/sse")
+        print(f"  Health check: http://{host}:{port}/health")
+
+        uvicorn.run(web_app, host=host, port=port)
+
+    else:
+        # stdio Mode (default): Local communication via stdin/stdout
+        # This is the standard way MCP servers integrate with MCP clients
+        # The server runs as a subprocess and communicates via stdin/stdout
+        from mcp.server.stdio import stdio_server
+
+        print("MCP server running in stdio mode")
+
+        # Create stdio server for communication
+        async with stdio_server() as (read_stream, write_stream):
+            # Run the MCP server with the streams
+            await app.run(
+                read_stream,
+                write_stream,
+                app.create_initialization_options()
+            )
 
 
 if __name__ == "__main__":

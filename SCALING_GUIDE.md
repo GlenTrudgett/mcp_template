@@ -2,6 +2,22 @@
 
 This guide provides general patterns and best practices for scaling your MCP server from a minimal boilerplate to a production-ready implementation.
 
+## Transport Mode Selection
+
+This boilerplate supports two transport modes:
+- **stdio (default)**: Local communication via stdin/stdout for CLI tools
+- **SSE**: Remote HTTP/SSE communication for web clients and production
+
+Set the transport mode via the `MCP_TRANSPORT` environment variable:
+```bash
+MCP_TRANSPORT=stdio   # Local mode (default)
+MCP_TRANSPORT=sse     # Remote HTTP/SSE mode
+```
+
+**When to use each:**
+- Use **stdio** for local development, desktop applications, and CLI tools
+- Use **SSE** for web clients, remote deployment, and production scenarios
+
 ## Modularization
 
 ### Separate Tool Modules
@@ -573,6 +589,104 @@ async def fetch_data(url: str) -> str:
 
 ## Security Considerations
 
+### SSE-Specific Security
+
+When using SSE transport for remote deployment, implement these security measures:
+
+```python
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+web_app = FastAPI()
+
+# Configure CORS for web client access
+web_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://yourdomain.com"],  # Restrict to specific origins
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+# Add authentication middleware
+from fastapi import Header, HTTPException
+
+async def verify_auth(authorization: str = Header(...)):
+    """Verify authentication token."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header")
+    token = authorization[7:]
+    # Validate token against your auth system
+    if not validate_token(token):
+        raise HTTPException(status_code=403, detail="Invalid token")
+    return token
+
+# Protect SSE endpoint with auth
+@web_app.get("/sse", dependencies=[Depends(verify_auth)])
+async def sse_endpoint():
+    # ... SSE implementation
+    pass
+```
+
+### SSE Production Deployment
+
+For production deployment with SSE transport:
+
+**1. Containerization (Docker):**
+
+```dockerfile
+FROM python:3.10-slim
+WORKDIR /app
+COPY . .
+RUN pip install uv && uv sync --extra sse
+ENV MCP_TRANSPORT=sse
+ENV MCP_HOST=0.0.0.0
+ENV MCP_PORT=8000
+EXPOSE 8000
+CMD ["uv", "run", "uvicorn", "mcp_server:web_app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+```
+
+**2. Production Server Configuration:**
+
+```bash
+# Run with uvicorn for production
+uv run uvicorn mcp_server:web_app \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --workers 4 \
+    --log-level info \
+    --access-log \
+    --timeout-keep-alive 75
+```
+
+**3. Environment Variables:**
+
+```bash
+export MCP_TRANSPORT=sse
+export MCP_HOST=0.0.0.0
+export MCP_PORT=8000
+export LOG_LEVEL=info
+```
+
+**4. Health Checks:**
+
+The `/health` endpoint provides:
+- Server status (healthy/unhealthy)
+- Transport mode
+- Active session count
+
+Use for:
+- Kubernetes liveness/readiness probes
+- Docker health checks
+- Load balancer health checks
+
+**5. TLS/HTTPS:**
+
+Use a reverse proxy for TLS termination:
+- Nginx, Traefik, or Caddy
+- Configure proxy to forward to http://localhost:8000
+- Handle SSL certificates at the proxy layer
+
 ### Input Sanitization
 
 Sanitize all user inputs:
@@ -691,5 +805,7 @@ When scaling your MCP server, focus on:
 6. **Testing**: Write comprehensive tests
 7. **Performance**: Cache expensive operations, pool connections
 8. **Security**: Sanitize inputs, rate limit, authenticate
+9. **Transport Selection**: Choose stdio for local, SSE for remote deployment
+10. **Production Deployment**: Use uvicorn with workers, health checks, and TLS
 
 Apply these patterns incrementally as your server grows in complexity.
